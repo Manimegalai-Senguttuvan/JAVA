@@ -1,0 +1,266 @@
+package I136;
+import java.util.*;
+
+class WorkOrder {
+    private int woId;
+    private String product;
+    private int quantity;
+    private Date dueDate;
+    private String state;
+
+    public WorkOrder(int woId, String product, int quantity, Date dueDate) {
+        this.woId = woId;
+        this.product = product;
+        this.quantity = quantity;
+        this.dueDate = dueDate;
+        this.state = "Planned";
+    }
+
+    public int getWoId() {
+        return woId;
+    }
+
+    public String getProduct() {
+        return product;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+
+    public Date getDueDate() {
+        return dueDate;
+    }
+
+    public String getState() {
+        return state;
+    }
+
+    public void setState(String newState) {
+        if (state.equals("Planned") && (newState.equals("Started") || newState.equals("Paused"))) {
+            state = newState;
+        } else if (state.equals("Started") && (newState.equals("Paused") || newState.equals("Completed"))) {
+            state = newState;
+        } else if (state.equals("Paused") && (newState.equals("Started") || newState.equals("Completed"))) {
+            state = newState;
+        } else {
+            System.out.println("Invalid state transition from " + state + " to " + newState);
+        }
+    }
+}
+
+class Operator {
+    private int operatorId;
+    private String name;
+    private String grade;
+    private List<String> skills;
+    private String shift;
+
+    public Operator(int operatorId, String name, String grade, List<String> skills, String shift) {
+        this.operatorId = operatorId;
+        this.name = name;
+        this.grade = grade;
+        this.skills = skills;
+        this.shift = shift;
+    }
+
+    public int getOperatorId() {
+        return operatorId;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public String getGrade() {
+        return grade;
+    }
+
+    public List<String> getSkills() {
+        return skills;
+    }
+
+    public String getShift() {
+        return shift;
+    }
+}
+
+class Machine {
+    protected int machineId;
+    protected String name;
+    protected int capacity;
+    protected String status;
+    protected WorkOrder assignedWO;
+
+    public Machine(int machineId, String name, int capacity) {
+        this.machineId = machineId;
+        this.name = name;
+        this.capacity = capacity;
+        this.status = "Idle";
+        this.assignedWO = null;
+    }
+
+    public int getMachineId() {
+        return machineId;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public int getCapacity() {
+        return capacity;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public WorkOrder getAssignedWO() {
+        return assignedWO;
+    }
+
+    public void assignWO(WorkOrder wo) {
+        this.assignedWO = wo;
+        this.status = "Running";
+        System.out.println(name + " assigned to WorkOrder #" + wo.getWoId());
+    }
+
+    public void startWO() {
+        if (assignedWO != null) {
+            assignedWO.setState("Started");
+            status = "Running";
+            System.out.println(name + " started WorkOrder #" + assignedWO.getWoId());
+        }
+    }
+
+    public void pauseWO() {
+        if (assignedWO != null) {
+            assignedWO.setState("Paused");
+            status = "Stopped";
+            System.out.println(name + " paused WorkOrder #" + assignedWO.getWoId());
+        }
+    }
+
+    public void completeWO() {
+        if (assignedWO != null) {
+            assignedWO.setState("Completed");
+            status = "Idle";
+            System.out.println(name + " completed WorkOrder #" + assignedWO.getWoId());
+            assignedWO = null;
+        }
+    }
+
+    // Method Overloading
+    public void updateProgress(int unitsCompleted) {
+        System.out.println(name + ": Progress updated by units: " + unitsCompleted);
+    }
+
+    public void updateProgress(double percentCompleted) {
+        System.out.println(name + ": Progress updated by percent: " + percentCompleted + "%");
+    }
+
+    public void updateProgress(int percentCompleted, int timeMinutes) {
+        System.out.println(name + ": Progress updated by " + percentCompleted + "% in " + timeMinutes + " minutes");
+    }
+
+    // Overridable methods
+    public double lineOEE() {
+        return 0.85;
+    }
+
+    public double downtime() {
+        return 10;
+    }
+}
+
+class CNC extends Machine {
+    public CNC(int machineId, String name, int capacity) {
+        super(machineId, name, capacity);
+    }
+
+    @Override
+    public double lineOEE() {
+        return 0.90;
+    }
+
+    @Override
+    public double downtime() {
+        return 5;
+    }
+}
+
+class AssemblyLine extends Machine {
+    public AssemblyLine(int machineId, String name, int capacity) {
+        super(machineId, name, capacity);
+    }
+
+    @Override
+    public double lineOEE() {
+        return 0.80;
+    }
+
+    @Override
+    public double downtime() {
+        return 15;
+    }
+}
+
+class ProductionService {
+    public void planWorkOrder(WorkOrder wo) {
+        wo.setState("Planned");
+        System.out.println("WorkOrder #" + wo.getWoId() + " planned.");
+    }
+
+    public void startWorkOrder(WorkOrder wo) {
+        wo.setState("Started");
+        System.out.println("WorkOrder #" + wo.getWoId() + " started.");
+    }
+
+    public void pauseWorkOrder(WorkOrder wo) {
+        wo.setState("Paused");
+        System.out.println("WorkOrder #" + wo.getWoId() + " paused.");
+    }
+
+    public void completeWorkOrder(WorkOrder wo) {
+        wo.setState("Completed");
+        System.out.println("WorkOrder #" + wo.getWoId() + " completed.");
+    }
+
+    public void computeKPIs(List<Machine> machines) {
+        for (Machine m : machines) {
+            System.out.println("Machine " + m.getName() + ": OEE = " + m.lineOEE() + ", Downtime = " + m.downtime() + " mins");
+        }
+    }
+}
+
+public class ManufacturingSystem{
+    public static void main(String[] args) {
+        WorkOrder wo1 = new WorkOrder(1, "ProductA", 100, new Date());
+        WorkOrder wo2 = new WorkOrder(2, "ProductB", 200, new Date());
+
+        CNC cnc1 = new CNC(101, "CNC-1", 50);
+        AssemblyLine al1 = new AssemblyLine(201, "AssemblyLine-1", 100);
+
+        cnc1.assignWO(wo1);
+        al1.assignWO(wo2);
+
+        ProductionService service = new ProductionService();
+
+        cnc1.startWO();
+        al1.startWO();
+
+        cnc1.updateProgress(20);
+        al1.updateProgress(40.5);
+        cnc1.updateProgress(30, 60);
+
+        cnc1.pauseWO();
+        cnc1.completeWO();
+
+        List<Machine> machines = new ArrayList<>();
+        machines.add(cnc1);
+        machines.add(al1);
+
+        service.computeKPIs(machines);
+    }
+}
