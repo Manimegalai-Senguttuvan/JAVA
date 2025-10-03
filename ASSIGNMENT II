@@ -1,0 +1,577 @@
+package javarecord;
+import java.util.*;
+import java.text.DecimalFormat;
+
+enum ProductTaxCategory {
+    NONE(0.0),
+    LOW(0.05),
+    STANDARD(0.12),
+    HIGH(0.18);
+
+    private final double rate;
+    ProductTaxCategory(double rate) { this.rate = rate; }
+    public double getRate() { return rate; }
+}
+
+class Product {
+    private int id;
+    private String name;
+    private double price;
+    private int stockQty;
+    private ProductTaxCategory taxCategory;
+
+    public Product(int id, String name, double price, int stockQty, ProductTaxCategory taxCategory) {
+        this.id = id; this.name = name; this.price = price; this.stockQty = stockQty; this.taxCategory = taxCategory;
+    }
+
+    public int getId() { return id; }
+    public String getName() { return name; }
+    public double getPrice() { return price; }
+    public int getStockQty() { return stockQty; }
+    public ProductTaxCategory getTaxCategory() { return taxCategory; }
+
+    public void setPrice(double p) { if (p >= 0) this.price = p; }
+    public void setName(String n) { if(n != null) this.name = n; }
+    public synchronized void adjustStock(int delta) {
+        this.stockQty += delta;
+    }
+
+    public String toString() {
+        return String.format("ID:%d | %s | Price: ₹%.2f | Stock: %d | Tax: %.0f%%",
+            id, name, price, stockQty, taxCategory.getRate()*100);
+    }
+}
+
+class Customer {
+    private int id;
+    private String name;
+    private String phone;
+
+    public Customer(int id, String name, String phone) {
+        this.id = id; this.name = name; this.phone = phone;
+    }
+
+    public int getId() { return id; }
+    public String getName() { return name; }
+    public String getPhone() { return phone; }
+
+    public void setName(String n) { if(n != null) this.name = n; }
+    public void setPhone(String p) { if(p != null) this.phone = p; }
+
+    // Polymorphism point: base gives no discount and no point actions.
+    public double getDiscountForSale(double subtotal) {
+        return 0.0;
+    }
+
+    // Called after sale to give customer chance to update points, etc.
+    public void applyPostSaleActions(double amountAfterDiscountBeforeTax) {
+        // default: regular customers do nothing
+    }
+
+    public String getCustomerType() { return "Regular"; }
+}
+
+class PremiumCustomer extends Customer {
+    private int rewardPoints;
+
+    public PremiumCustomer(int id, String name, String phone) {
+        super(id, name, phone);
+        this.rewardPoints = 0;
+    }
+
+    public int getRewardPoints() { return rewardPoints; }
+
+    // Add points (positive)
+    public void addPoints(int p) { if (p > 0) rewardPoints += p; }
+
+    // Redeem specified points (must be multiple of 100)
+    public void redeemPoints(int p) {
+        if (p > 0 && p % 100 == 0 && p <= rewardPoints) rewardPoints -= p;
+    }
+
+    // If customer has >=200 points, redeem points in 100-point chunks -> ₹10 per 100 points.
+    // Returns discount amount applied and reduces points accordingly.
+    @Override
+    public double getDiscountForSale(double subtotal) {
+        if (rewardPoints < 200) return 0.0;
+        int hundreds = rewardPoints / 100; // e.g., 250 -> 2
+        double discount = hundreds * 10.0; // ₹10 per 100 points
+        // Deduct used points
+        redeemPoints(hundreds * 100);
+        return discount;
+    }
+
+    // award points after sale: 1 point per ₹100 spent (after discounts, before tax)
+    @Override
+    public void applyPostSaleActions(double amountAfterDiscountBeforeTax) {
+        if (amountAfterDiscountBeforeTax <= 0) return;
+        int earned = (int) Math.floor(amountAfterDiscountBeforeTax / 100.0);
+        addPoints(earned);
+    }
+
+    @Override
+    public String getCustomerType() { return "Premium"; }
+}
+
+class SaleDetail {
+    private Product product;
+    private int quantity;
+    private double unitPrice;
+    private double taxAmount; // for this line
+    private double lineTotal; // after tax for this line
+
+    public SaleDetail(Product product, int quantity) {
+        this.product = product;
+        this.quantity = quantity;
+        this.unitPrice = product.getPrice();
+    }
+
+    public Product getProduct() { return product; }
+    public int getQuantity() { return quantity; }
+    public double getUnitPrice() { return unitPrice; }
+    public double getTaxAmount() { return taxAmount; }
+    public double getLineTotal() { return lineTotal; }
+
+    // compute amounts for this line taking taxRate and any per-line discount is not applied here
+    public double computeLineSubtotal() {
+        return unitPrice * quantity;
+    }
+
+    public void computeTaxAndTotal(double lineDiscountShare) {
+        // apply a share of discount to this line before tax
+        double taxableAmount = computeLineSubtotal() - lineDiscountShare;
+        if (taxableAmount < 0) taxableAmount = 0;
+        double rate = product.getTaxCategory().getRate();
+        taxAmount = roundTwoDecimals(taxableAmount * rate);
+        lineTotal = roundTwoDecimals(taxableAmount + taxAmount);
+    }
+
+    private double roundTwoDecimals(double v) {
+        return Math.round(v * 100.0) / 100.0;
+    }
+}
+
+class Sale {
+    private static int nextId = 1;
+    private int id;
+    private Customer customer;
+    private List<SaleDetail> details = new ArrayList<>();
+    private double subtotal;
+    private double discount;
+    private double tax;
+    private double total;
+
+    public Sale(Customer customer) {
+        this.id = nextId++;
+        this.customer = customer;
+    }
+
+    public void addDetail(SaleDetail sd) { details.add(sd); }
+
+    // Process sale: calculates subtotal, determines discount via customer polymorphic method,
+    // distributes discount proportionally to lines (so tax per line is accurate),
+    // computes tax and total. After processing, call customer's applyPostSaleActions to award points
+    public void processAndFinalize() {
+        subtotal = 0;
+        for (SaleDetail sd : details) subtotal += sd.computeLineSubtotal();
+        subtotal = round(subtotal);
+
+        // Customer may provide discount (Premium behavior). Polymorphism used here.
+        discount = customer.getDiscountForSale(subtotal);
+        if (discount < 0) discount = 0;
+        if (discount > subtotal) discount = subtotal; // can't exceed subtotal
+
+        // Distribute discount proportionally across lines for accurate tax calc
+        double remainingDiscount = discount;
+        double distributed = 0.0;
+        double totalSub = subtotal;
+
+        // handle case totalSub is 0
+        if (totalSub <= 0) {
+            for (SaleDetail sd : details) sd.computeTaxAndTotal(0.0);
+        } else {
+            for (int i = 0; i < details.size(); i++) {
+                SaleDetail sd = details.get(i);
+                double lineSub = sd.computeLineSubtotal();
+                double share;
+                if (i == details.size() - 1) {
+                    // last line gets leftover to avoid rounding mismatch
+                    share = remainingDiscount;
+                } else {
+                    share = round(discount * (lineSub / totalSub));
+                    remainingDiscount = round(remainingDiscount - share);
+                }
+                sd.computeTaxAndTotal(share);
+                distributed += share;
+            }
+        }
+
+        // sum up taxes and totals
+        tax = 0; total = 0;
+        for (SaleDetail sd : details) {
+            tax += sd.getTaxAmount();
+            total += sd.getLineTotal();
+        }
+        tax = round(tax);
+        total = round(total);
+
+        // Post-sale actions: e.g., award premium points
+        // Points awarding uses amount after discounts but before tax: (subtotal - discount)
+        double amountAfterDiscountBeforeTax = round(subtotal - discount);
+        customer.applyPostSaleActions(amountAfterDiscountBeforeTax);
+    }
+
+    public List<SaleDetail> getDetails() { return details; }
+    public Customer getCustomer() { return customer; }
+    public double getSubtotal() { return subtotal; }
+    public double getDiscount() { return discount; }
+    public double getTax() { return tax; }
+    public double getTotal() { return total; }
+    public int getId() { return id; }
+
+    private double round(double v) {
+        return Math.round(v * 100.0) / 100.0;
+    }
+}
+
+class PurchaseDetail {
+    private Product product;
+    private int quantity;
+    private double unitPrice;
+
+    public PurchaseDetail(Product product, int quantity, double unitPrice) {
+        this.product = product;
+        this.quantity = quantity;
+        this.unitPrice = unitPrice;
+    }
+
+    public Product getProduct() { return product; }
+    public int getQuantity() { return quantity; }
+    public double getUnitPrice() { return unitPrice; }
+    public double lineTotal() { return unitPrice * quantity; }
+}
+
+class Purchase {
+    private static int nextId = 1;
+    private int id;
+    private Date date;
+    private List<PurchaseDetail> details = new ArrayList<>();
+    private double total;
+
+    public Purchase() {
+        this.id = nextId++;
+        this.date = new Date();
+    }
+
+    public void addDetail(PurchaseDetail pd) { details.add(pd); }
+
+    public void process() {
+        total = 0;
+        for (PurchaseDetail pd : details) {
+            total += pd.lineTotal();
+            // update stock
+            pd.getProduct().adjustStock(pd.getQuantity());
+        }
+    }
+
+    public List<PurchaseDetail> getDetails() { return details; }
+    public double getTotal() { return total; }
+}
+
+/* Simple in-memory datastore to hold products and customers */
+class DataStore {
+    private Map<Integer, Product> products = new HashMap<>();
+    private Map<Integer, Customer> customers = new HashMap<>();
+    private int nextProductId = 1;
+    private int nextCustomerId = 1;
+
+    // Product ops
+    public Product addProduct(String name, double price, int stockQty, ProductTaxCategory cat) {
+        int id = nextProductId++;
+        Product p = new Product(id, name, price, stockQty, cat);
+        products.put(id, p);
+        return p;
+    }
+
+    public Product getProductById(int id) { return products.get(id); }
+    public Collection<Product> getAllProducts() { return products.values(); }
+
+    // Customer ops
+    public Customer addRegularCustomer(String name, String phone) {
+        int id = nextCustomerId++;
+        Customer c = new Customer(id, name, phone);
+        customers.put(id, c);
+        return c;
+    }
+
+    public PremiumCustomer addPremiumCustomer(String name, String phone) {
+        int id = nextCustomerId++;
+        PremiumCustomer p = new PremiumCustomer(id, name, phone);
+        customers.put(id, p);
+        return p;
+    }
+
+    public Customer getCustomerById(int id) { return customers.get(id); }
+    public Collection<Customer> getAllCustomers() { return customers.values(); }
+}
+
+/* The main console application demonstrating the requested features */
+public class pro1 {
+    private static Scanner scanner = new Scanner(System.in);
+    private static DataStore ds = new DataStore();
+    private static DecimalFormat moneyFmt = new DecimalFormat("#,##0.00");
+
+    public static void main(String[] args) {
+        seedSampleData(); // optional: creates some default products/customers
+        boolean exit = false;
+        while (!exit) {
+            printMenu();
+            int choice = readInt("Enter choice: ", 1, 6);
+            switch (choice) {
+                case 1: addProductFlow(); break;
+                case 2: addCustomerFlow(); break;
+                case 3: makePurchaseFlow(); break;
+                case 4: makeSaleFlow(); break;
+                case 5: displayProducts(); break;
+                case 6: System.out.println("Exiting... Goodbye!"); exit = true; break;
+            }
+            System.out.println();
+        }
+    }
+
+    private static void printMenu() {
+        System.out.println("=== Inventory & Billing System ===");
+        System.out.println("1. Add Product");
+        System.out.println("2. Add Customer");
+        System.out.println("3. Make a Purchase (Add stock)");
+        System.out.println("4. Make a Sale");
+        System.out.println("5. Display Products");
+        System.out.println("6. Exit");
+    }
+
+    // Flows
+
+    private static void addProductFlow() {
+        System.out.println("-> Add Product");
+        String name = readNonEmptyString("Product name: ");
+        double price = readDouble("Unit price (₹): ", 0.01, 1_000_000);
+        int qty = readInt("Initial stock quantity: ", 0, Integer.MAX_VALUE);
+        System.out.println("Tax categories: 1.NONE  2.LOW(5%)  3.STANDARD(12%)  4.HIGH(18%)");
+        int tchoice = readInt("Choose tax category (1-4): ", 1, 4);
+        ProductTaxCategory cat = ProductTaxCategory.NONE;
+        switch (tchoice) {
+            case 1: cat = ProductTaxCategory.NONE; break;
+            case 2: cat = ProductTaxCategory.LOW; break;
+            case 3: cat = ProductTaxCategory.STANDARD; break;
+            case 4: cat = ProductTaxCategory.HIGH; break;
+        }
+        Product p = ds.addProduct(name, price, qty, cat);
+        System.out.println("Product added: " + p);
+    }
+
+    private static void addCustomerFlow() {
+        System.out.println("-> Add Customer");
+        String name = readNonEmptyString("Customer name: ");
+        String phone = readNonEmptyString("Phone: ");
+        System.out.println("Type: 1. Regular  2. Premium");
+        int t = readInt("Choice: ", 1, 2);
+        if (t == 1) {
+            Customer c = ds.addRegularCustomer(name, phone);
+            System.out.printf("Regular customer added. ID: %d, Name: %s\n", c.getId(), c.getName());
+        } else {
+            PremiumCustomer pc = ds.addPremiumCustomer(name, phone);
+            System.out.printf("Premium customer added. ID: %d, Name: %s\n", pc.getId(), pc.getName());
+        }
+    }
+
+    private static void makePurchaseFlow() {
+        System.out.println("-> Make a Purchase (Add stock)");
+        displayProducts();
+        int pid = readInt("Enter Product ID to purchase: ", 1, Integer.MAX_VALUE);
+        Product p = ds.getProductById(pid);
+        if (p == null) {
+            System.out.println("Product not found.");
+            return;
+        }
+        int qty = readInt("Quantity to add: ", 1, Integer.MAX_VALUE);
+        double unitPrice = readDouble("Unit price paid (₹): ", 0.0, 1_000_000);
+        Purchase pur = new Purchase();
+        pur.addDetail(new PurchaseDetail(p, qty, unitPrice));
+        pur.process();
+        System.out.printf("Purchase processed. Stock for '%s' is now: %d\n", p.getName(), p.getStockQty());
+    }
+
+    private static void makeSaleFlow() {
+        System.out.println("-> Make a Sale");
+        // Choose customer
+        System.out.println("Customers:");
+        for (Customer c : ds.getAllCustomers()) {
+            String extra = (c instanceof PremiumCustomer) ? " (Premium, points=" + ((PremiumCustomer)c).getRewardPoints() + ")" : "";
+            System.out.printf("ID:%d | %s%s\n", c.getId(), c.getName(), extra);
+        }
+        int custId = readInt("Enter Customer ID: ", 1, Integer.MAX_VALUE);
+        Customer cust = ds.getCustomerById(custId);
+        if (cust == null) {
+            System.out.println("Customer not found.");
+            return;
+        }
+
+        Sale sale = new Sale(cust);
+
+        // Keep adding sale lines
+        boolean adding = true;
+        while (adding) {
+            displayProducts();
+            int pid = readInt("Product ID to sell (0 to finish): ", 0, Integer.MAX_VALUE);
+            if (pid == 0) {
+                adding = false;
+                break;
+            }
+            Product p = ds.getProductById(pid);
+            if (p == null) {
+                System.out.println("Product not found.");
+                continue;
+            }
+            System.out.printf("Available stock for %s: %d\n", p.getName(), p.getStockQty());
+            int qty = readInt("Quantity: ", 1, Integer.MAX_VALUE);
+            if (qty > p.getStockQty()) {
+                System.out.println("Insufficient stock - sale cannot include this quantity. Try smaller quantity or restock.");
+                continue;
+            }
+            sale.addDetail(new SaleDetail(p, qty));
+            // allow more items or finish
+            System.out.println("Added. Add more? (y/n): ");
+            String yn = scanner.nextLine().trim().toLowerCase();
+            if (!yn.equals("y") && !yn.equals("yes")) adding = false;
+        }
+
+        if (sale.getDetails().isEmpty()) {
+            System.out.println("No items in sale. Aborting sale.");
+            return;
+        }
+
+        // Before finalizing, confirm stock again then decrement stocks
+        // First compute totals and determine discount (this may change Premium customer's points)
+        sale.processAndFinalize();
+
+        // Validate stock once more and reduce stock (atomic per product)
+        for (SaleDetail sd : sale.getDetails()) {
+            Product prod = sd.getProduct();
+            int q = sd.getQuantity();
+            if (q > prod.getStockQty()) {
+                System.out.printf("ERROR: stock changed and is insufficient for product %s. Sale aborted.\n", prod.getName());
+                return;
+            }
+        }
+
+        // Apply stock deduction
+        for (SaleDetail sd : sale.getDetails()) {
+            sd.getProduct().adjustStock(-sd.getQuantity());
+        }
+
+        // Display bill
+        printSaleBill(sale);
+
+        // If premium, after sale, also show updated reward points (applyPostSaleActions already updated)
+        if (cust instanceof PremiumCustomer) {
+            System.out.println("Updated reward points: " + ((PremiumCustomer)cust).getRewardPoints());
+        }
+
+        // Show updated stock for items sold
+        System.out.println("Updated stock levels for sold items:");
+        for (SaleDetail sd : sale.getDetails()) {
+            Product prod = sd.getProduct();
+            System.out.printf("Product: %s | Stock: %d\n", prod.getName(), prod.getStockQty());
+        }
+    }
+
+    // Utility printing of sale bill
+    private static void printSaleBill(Sale sale) {
+        System.out.println("----- SALE BILL -----");
+        System.out.println("Sale ID: " + sale.getId());
+        System.out.println("Customer: " + sale.getCustomer().getName() + " (" + sale.getCustomer().getCustomerType() + ")");
+        System.out.println("-----------------------------------------------");
+        System.out.printf("%-4s %-20s %6s %10s %8s %10s\n", "No.", "Product", "Qty", "Unit(₹)", "Tax(₹)", "LineTotal(₹)");
+        int i = 1;
+        for (SaleDetail sd : sale.getDetails()) {
+            System.out.printf("%-4d %-20s %6d %10s %8s %10s\n",
+                i++,
+                sd.getProduct().getName(),
+                sd.getQuantity(),
+                moneyFmt.format(sd.getUnitPrice()),
+                moneyFmt.format(sd.getTaxAmount()),
+                moneyFmt.format(sd.getLineTotal())
+            );
+        }
+        System.out.println("-----------------------------------------------");
+        System.out.printf("Subtotal: ₹%s\n", moneyFmt.format(sale.getSubtotal()));
+        System.out.printf("Discount: -₹%s\n", moneyFmt.format(sale.getDiscount()));
+        System.out.printf("Tax: ₹%s\n", moneyFmt.format(sale.getTax()));
+        System.out.printf("Total Payable: ₹%s\n", moneyFmt.format(sale.getTotal()));
+        System.out.println("----------------------");
+    }
+
+    private static void displayProducts() {
+        System.out.println("Products in inventory:");
+        for (Product p : ds.getAllProducts()) {
+            System.out.println(p);
+        }
+    }
+
+    // Helpers & input validation
+
+    private static String readNonEmptyString(String prompt) {
+        while (true) {
+            System.out.print(prompt);
+            String s = scanner.nextLine().trim();
+            if (!s.isEmpty()) return s;
+            System.out.println("Input cannot be empty.");
+        }
+    }
+
+    private static int readInt(String prompt, int min, int max) {
+        while (true) {
+            try {
+                System.out.print(prompt);
+                String line = scanner.nextLine().trim();
+                int val = Integer.parseInt(line);
+                if (val < min || val > max) {
+                    System.out.printf("Enter a number between %d and %d.\n", min, max);
+                    continue;
+                }
+                return val;
+            } catch (NumberFormatException ex) {
+                System.out.println("Invalid integer input. Try again.");
+            }
+        }
+    }
+
+    private static double readDouble(String prompt, double min, double max) {
+        while (true) {
+            try {
+                System.out.print(prompt);
+                String line = scanner.nextLine().trim();
+                double val = Double.parseDouble(line);
+                if (val < min || val > max) {
+                    System.out.printf("Enter a number between %s and %s.\n", moneyFmt.format(min), moneyFmt.format(max));
+                    continue;
+                }
+                return Math.round(val * 100.0) / 100.0;
+            } catch (NumberFormatException ex) {
+                System.out.println("Invalid number input. Try again.");
+            }
+        }
+    }
+
+    // seed some sample data for convenience
+    private static void seedSampleData() {
+        ds.addProduct("Pen (Blue)", 12.50, 100, ProductTaxCategory.LOW);
+        ds.addProduct("Notebook A4", 55.00, 50, ProductTaxCategory.STANDARD);
+        ds.addProduct("Calculator", 499.00, 10, ProductTaxCategory.HIGH);
+        ds.addProduct("Stapler", 149.00, 20, ProductTaxCategory.STANDARD);
+
+        ds.addRegularCustomer("Ramesh", "9876501234");
+        ds.addPremiumCustomer("Sangeeta", "9988776655");
+    }
+
+}
